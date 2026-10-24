@@ -53,6 +53,8 @@ internal sealed class SwitchForm : Form
         FormBorderStyle = FormBorderStyle.FixedToolWindow;
         Text = "显示器切换";
         callback = MouseHook;
+        menu.Opened += delegate { Status("Menu opened"); };
+        menu.Closed += delegate(object sender, ToolStripDropDownClosedEventArgs e) { Status("Menu closed; reason=" + e.CloseReason); };
         scanTimer.Tick += delegate { RefreshButtons(); };
         var trayMenu = new ContextMenuStrip();
         trayMenu.Items.Add("Shift + 右键任务栏图标 → 选择显示器", null, delegate { });
@@ -101,6 +103,11 @@ internal sealed class SwitchForm : Form
         if (code >= 0)
         {
             int kind = message.ToInt32();
+            if (menu.Visible && (kind == 0x201 || kind == 0x204 || kind == 0x207 || kind == 0x20B))
+            {
+                var click = ((Native.MouseData)Marshal.PtrToStructure(data, typeof(Native.MouseData))).Point;
+                CloseMenuOutside(new Point(click.X, click.Y));
+            }
             if (kind == 0x205 && swallowUp)
             {
                 swallowUp = false;
@@ -124,6 +131,25 @@ internal sealed class SwitchForm : Form
             }
         }
         return Native.CallNextHookEx(hook, code, message, data);
+    }
+
+    private void CloseMenuOutside(Point point)
+    {
+        if (!MenuContainsPoint(menu, point))
+            // Close on the UI queue; the original click still reaches its target.
+            BeginInvoke((Action)delegate { menu.Close(ToolStripDropDownCloseReason.AppClicked); });
+    }
+
+    private static bool MenuContainsPoint(ToolStripDropDown dropdown, Point point)
+    {
+        if (!dropdown.Visible) return false;
+        if (dropdown.Bounds.Contains(point)) return true;
+        foreach (ToolStripItem item in dropdown.Items)
+        {
+            var child = item as ToolStripDropDownItem;
+            if (child != null && child.HasDropDownItems && MenuContainsPoint(child.DropDown, point)) return true;
+        }
+        return false;
     }
 
     private void RefreshButtons()
