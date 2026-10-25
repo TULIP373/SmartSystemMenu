@@ -229,7 +229,7 @@ internal sealed class SwitchForm : Form
                     return;
                 }
                 if (!WindowMover.Move(window.Handle, target))
-                    MessageBox.Show("窗口未能移到目标显示器。若目标软件以管理员身份运行，请以管理员身份启动显示器切换。", Text);
+                    MessageBox.Show("窗口未能移到目标显示器，请确认窗口仍在运行、目标显示器仍已连接，然后重新选择。", Text);
             };
             items.Add(item);
         }

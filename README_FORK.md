@@ -6,7 +6,7 @@
 
 ## 使用
 
-1. 启动 `MonitorSwitch.exe`。
+1. 启动 `MonitorSwitch.exe`，在 Windows 管理员权限提示中选择“是”（用于移动任务管理器等管理员窗口）。
 2. 按住 **Shift**，右键任务栏上已经打开的程序图标。
 3. 选择 **移到显示器 1 / 2 / …**。当前所在显示器会打勾。
 
@@ -37,7 +37,8 @@
 还可读取任务栏图标与窗口的匹配结果（包含本地程序名和窗口句柄，不含聊天正文）：
 
 ```powershell
-.\MonitorSwitch\bin\MonitorSwitch.exe --diagnose "$env:TEMP\MonitorSwitch-diagnose.txt"
+Start-Process .\MonitorSwitch\bin\MonitorSwitch.exe -Verb RunAs `
+    -ArgumentList "--diagnose `"$env:TEMP\MonitorSwitch-diagnose.txt`""
 ```
 
 ## 本机部署
@@ -51,7 +52,7 @@
 - 目前针对 Windows 11 的 `Appid:` 任务栏按钮实现；其他任务栏替代软件尚未验证。
 - 识别采用任务栏 AppUserModelID、窗口属性、包进程及其宿主子窗口。精确匹配失败时仅尝试完整标题、进程名或产品名；匹配不到时提示，不移动别的窗口。
 - 任务栏按钮位置定期刷新，新出现的图标可能需要等待约 1 秒再操作。
-- 管理员窗口可能需要以管理员身份运行 MonitorSwitch。
+- 程序启动时申请管理员权限；拒绝 Windows 权限提示则不会启动。运行期间移动窗口无需再次授权。
 - 只移动当前已打开的窗口，不改变以后新窗口的默认显示器。
 
 原有 `SmartSystemMenu/SmartSystemMenu.xml` 仍保留只显示 `move_to` 的精简配置，供传统系统菜单模式使用。
