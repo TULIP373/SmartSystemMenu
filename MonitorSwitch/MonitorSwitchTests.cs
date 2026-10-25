@@ -30,6 +30,13 @@ internal static class MonitorSwitchTests
         Check(TaskbarResolver.Match(new TaskbarButton { AppId = "Unknown!App", Label = "Unknown" }, windows).Count == 0, "Unknown apps never select an unrelated foreground window");
         Check(TaskbarResolver.Match(new TaskbarButton { AppId = "", Label = "Second window" }, windows).Single() == second, "Exact window-title fallback works");
         CheckMouseGestures();
+        Check(TaskbarPreviewSuppressor.IsTaskbarPreview("TaskListThumbnailWnd", 10, 20, 10, 20), "Classic taskbar thumbnails are recognized");
+        Check(TaskbarPreviewSuppressor.IsTaskbarPreview("XamlExplorerHostIslandWindow", 10, 20, 10, 20), "Windows 11 taskbar preview hosts are recognized");
+        Check(!TaskbarPreviewSuppressor.IsTaskbarPreview("XamlExplorerHostIslandWindow", 10, 21, 10, 20), "Alt-Tab and Task View on other Explorer threads are excluded");
+        Check(!TaskbarPreviewSuppressor.IsTaskbarPreview("TaskListThumbnailWnd", 11, 20, 10, 20), "Other processes cannot be mistaken for taskbar previews");
+        Check(!TaskbarPreviewSuppressor.IsTaskbarPreview("XamlExplorerHostIslandWindow_WASDK", 10, 20, 10, 20), "Desktop context-menu hosts are excluded");
+        Check(!TaskbarPreviewSuppressor.IsTaskbarPreview("Shell_TrayWnd", 10, 20, 10, 20), "The taskbar itself is never hidden");
+        Check(!TaskbarPreviewSuppressor.IsTaskbarPreview("XamlExplorerHostIslandWindow", 0, 0, 0, 0), "Invalid window identities are excluded");
 
         using (var form = new MenuLessForm())
         {

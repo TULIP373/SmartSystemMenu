@@ -40,6 +40,8 @@ internal sealed class SwitchForm : Form
     private readonly NotifyIcon tray;
     private readonly ContextMenuStrip menu = new ContextMenuStrip();
     private readonly System.Windows.Forms.Timer scanTimer = new System.Windows.Forms.Timer { Interval = 1200 };
+    private readonly System.Windows.Forms.Timer previewTimer = new System.Windows.Forms.Timer { Interval = 100 };
+    private readonly TaskbarPreviewSuppressor previews = new TaskbarPreviewSuppressor();
     private volatile TaskbarButton[] buttons = new TaskbarButton[0];
     private readonly TaskbarMouseGesture gesture = new TaskbarMouseGesture();
     private int scanning;
@@ -53,8 +55,13 @@ internal sealed class SwitchForm : Form
         FormBorderStyle = FormBorderStyle.FixedToolWindow;
         Text = "显示器切换";
         callback = MouseHook;
-        menu.Opened += delegate { Status("Menu opened"); };
-        menu.Closed += delegate(object sender, ToolStripDropDownClosedEventArgs e) { Status("Menu closed; reason=" + e.CloseReason); };
+        menu.Opened += delegate { previews.Dismiss(); previewTimer.Start(); Status("Menu opened"); };
+        menu.Closed += delegate(object sender, ToolStripDropDownClosedEventArgs e) { previewTimer.Stop(); Status("Menu closed; reason=" + e.CloseReason); };
+        previewTimer.Tick += delegate
+        {
+            if (pending || menu.Visible) previews.Dismiss();
+            else previewTimer.Stop();
+        };
         scanTimer.Tick += delegate { RefreshButtons(); };
         var trayMenu = new ContextMenuStrip();
         trayMenu.Items.Add("任务栏图标：按住右键，再点左键 → 选择显示器", null, delegate { });
@@ -92,6 +99,7 @@ internal sealed class SwitchForm : Form
             {
                 menu.Items.Clear();
                 AddMonitors(menu.Items, window);
+                PrepareTaskbarMenu();
                 Native.SetForegroundWindow(Handle);
                 menu.Show(Cursor.Position);
             }
@@ -180,6 +188,7 @@ internal sealed class SwitchForm : Form
 
     private void ResolveAndShow(Native.Point point, TaskbarButton button)
     {
+        PrepareTaskbarMenu();
         ThreadPool.QueueUserWorkItem(delegate
         {
             List<WindowInfo> windows = null;
@@ -218,6 +227,12 @@ internal sealed class SwitchForm : Form
         });
     }
 
+    private void PrepareTaskbarMenu()
+    {
+        previews.Begin();
+        previewTimer.Start();
+    }
+
     private static void Status(string message)
     {
         try { File.WriteAllText(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "MonitorSwitch.status.txt"), message, Encoding.UTF8); }
@@ -254,11 +269,65 @@ internal sealed class SwitchForm : Form
         Native.UnregisterHotKey(Handle, 1);
         scanTimer.Stop();
         scanTimer.Dispose();
+        previewTimer.Stop();
+        previewTimer.Dispose();
         tray.Visible = false;
         tray.ContextMenuStrip.Dispose();
         tray.Dispose();
         menu.Dispose();
         base.OnFormClosed(e);
+    }
+}
+
+internal sealed class TaskbarPreviewSuppressor
+{
+    private readonly Dictionary<uint, int> taskbarThreads = new Dictionary<uint, int>();
+
+    public void Begin()
+    {
+        taskbarThreads.Clear();
+        Native.EnumWindows(delegate(IntPtr hwnd, IntPtr data)
+        {
+            string name = Native.ClassName(hwnd);
+            if (name != "Shell_TrayWnd" && name != "Shell_SecondaryTrayWnd") return true;
+            int process;
+            uint thread = Native.GetWindowThreadProcessId(hwnd, out process);
+            if (thread == 0) return true;
+            taskbarThreads[thread] = process;
+            // Cancel the old hover before Explorer's delayed preview can reappear.
+            Native.PostMessage(hwnd, 0x2A3, IntPtr.Zero, IntPtr.Zero); // WM_MOUSELEAVE
+            Native.EnumChildWindows(hwnd, delegate(IntPtr child, IntPtr ignored)
+            {
+                int childProcess;
+                if (Native.GetWindowThreadProcessId(child, out childProcess) == thread && childProcess == process)
+                    Native.PostMessage(child, 0x2A3, IntPtr.Zero, IntPtr.Zero);
+                return true;
+            }, IntPtr.Zero);
+            return true;
+        }, IntPtr.Zero);
+        Dismiss();
+    }
+
+    public void Dismiss()
+    {
+        Native.EnumWindows(delegate(IntPtr hwnd, IntPtr data)
+        {
+            if (!Native.IsWindowVisible(hwnd)) return true;
+            string name = Native.ClassName(hwnd);
+            if (name != "TaskListThumbnailWnd" && name != "XamlExplorerHostIslandWindow") return true;
+            int process, expected;
+            uint thread = Native.GetWindowThreadProcessId(hwnd, out process);
+            if (taskbarThreads.TryGetValue(thread, out expected) && IsTaskbarPreview(name, process, thread, expected, thread))
+                Native.ShowWindowAsync(hwnd, 0); // SW_HIDE; never wait for Explorer's UI thread.
+            return true;
+        }, IntPtr.Zero);
+    }
+
+    internal static bool IsTaskbarPreview(string name, int process, uint thread, int taskbarProcess, uint taskbarThread)
+    {
+        // Alt+Tab and Task View can use the same XAML class on other threads.
+        return (name == "TaskListThumbnailWnd" || name == "XamlExplorerHostIslandWindow") &&
+            process != 0 && thread != 0 && process == taskbarProcess && thread == taskbarThread;
     }
 }
 
@@ -573,6 +642,8 @@ internal static class Native
     [DllImport("user32.dll")] internal static extern bool IsZoomed(IntPtr hwnd);
     [DllImport("user32.dll")] internal static extern bool IsIconic(IntPtr hwnd);
     [DllImport("user32.dll")] internal static extern bool ShowWindow(IntPtr hwnd, int command);
+    [DllImport("user32.dll")] internal static extern bool ShowWindowAsync(IntPtr hwnd, int command);
+    [DllImport("user32.dll")] internal static extern bool PostMessage(IntPtr hwnd, uint message, IntPtr wParam, IntPtr lParam);
     [DllImport("user32.dll", SetLastError = true)] internal static extern bool SetWindowPos(IntPtr hwnd, IntPtr after, int x, int y, int width, int height, uint flags);
     [DllImport("dwmapi.dll")] internal static extern int DwmGetWindowAttribute(IntPtr hwnd, int attribute, out int value, int size);
 }
