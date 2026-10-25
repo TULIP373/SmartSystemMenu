@@ -310,17 +310,20 @@ internal sealed class TaskbarPreviewSuppressor
 
     public void Dismiss()
     {
-        Native.EnumWindows(delegate(IntPtr hwnd, IntPtr data)
+        // New Windows 11 preview hosts can be omitted by EnumWindows even while
+        // visible. FindWindowEx also sees these taskbar-owned XAML top-level hosts.
+        foreach (string name in new[] { "TaskListThumbnailWnd", "XamlExplorerHostIslandWindow" })
         {
-            if (!Native.IsWindowVisible(hwnd)) return true;
-            string name = Native.ClassName(hwnd);
-            if (name != "TaskListThumbnailWnd" && name != "XamlExplorerHostIslandWindow") return true;
-            int process, expected;
-            uint thread = Native.GetWindowThreadProcessId(hwnd, out process);
-            if (taskbarThreads.TryGetValue(thread, out expected) && IsTaskbarPreview(name, process, thread, expected, thread))
-                Native.ShowWindowAsync(hwnd, 0); // SW_HIDE; never wait for Explorer's UI thread.
-            return true;
-        }, IntPtr.Zero);
+            IntPtr hwnd = IntPtr.Zero;
+            while ((hwnd = Native.FindWindowEx(IntPtr.Zero, hwnd, name, null)) != IntPtr.Zero)
+            {
+                if (!Native.IsWindowVisible(hwnd)) continue;
+                int process, expected;
+                uint thread = Native.GetWindowThreadProcessId(hwnd, out process);
+                if (taskbarThreads.TryGetValue(thread, out expected) && IsTaskbarPreview(name, process, thread, expected, thread))
+                    Native.ShowWindowAsync(hwnd, 0); // SW_HIDE; never wait for Explorer's UI thread.
+            }
+        }
     }
 
     internal static bool IsTaskbarPreview(string name, int process, uint thread, int taskbarProcess, uint taskbarThread)
@@ -622,6 +625,8 @@ internal static class Native
     [DllImport("user32.dll")] internal static extern IntPtr WindowFromPoint(Point point);
     [DllImport("user32.dll")] internal static extern IntPtr GetAncestor(IntPtr hwnd, uint flags);
     [DllImport("user32.dll")] internal static extern bool EnumWindows(EnumProc proc, IntPtr data);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, EntryPoint = "FindWindowExW")]
+    internal static extern IntPtr FindWindowEx(IntPtr parent, IntPtr after, string className, string title);
     [DllImport("user32.dll")] internal static extern bool EnumChildWindows(IntPtr hwnd, EnumProc proc, IntPtr data);
     [DllImport("user32.dll")] internal static extern bool IsWindowVisible(IntPtr hwnd);
     [DllImport("user32.dll")] internal static extern bool IsWindow(IntPtr hwnd);
