@@ -30,6 +30,24 @@ internal static class MonitorSwitchTests
         Check(TaskbarResolver.Match(new TaskbarButton { AppId = "Unknown!App", Label = "Unknown" }, windows).Count == 0, "Unknown apps never select an unrelated foreground window");
         Check(TaskbarResolver.Match(new TaskbarButton { AppId = "", Label = "Second window" }, windows).Single() == second, "Exact window-title fallback works");
         CheckMouseGestures();
+        CheckRequestCancellation();
+        var conflict = new WindowInfo { Title = "Shared title", ProcessName = "Other", Product = "Other" };
+        conflict.AppIds.Add("Other.Package!App");
+        Check(TaskbarResolver.Match(new TaskbarButton { AppId = "Clicked.Package!App", Label = "Shared title" },
+            new List<WindowInfo> { conflict }).Count == 0, "Conflicting application identities cannot match through the same title");
+        Check(TaskbarResolver.Match(new TaskbarButton { AppId = "Clicked.Package!App", Label = "Other" },
+            new List<WindowInfo> { conflict }).Count == 0, "Conflicting application identities cannot match through product or process names");
+        Check(TaskbarResolver.Match(new TaskbarButton { AppId = "Legacy!App", Label = "Other" },
+            new List<WindowInfo> { new WindowInfo { Title = "Legacy", ProcessName = "Other", Product = "Legacy" } }).Count == 1,
+            "Legacy windows with no explicit identity retain the process-name fallback");
+        var cached = new TaskbarButton { AppId = "Cached!App", Bounds = new System.Drawing.Rectangle(10, 10, 40, 40) };
+        var live = new TaskbarButton { AppId = "Actual!App", Bounds = cached.Bounds };
+        Check(!TaskbarResolver.SameLiveButton(cached, live, new System.Drawing.Point(20, 20)), "Stale icon positions cannot select another application");
+        live.AppId = cached.AppId;
+        Check(TaskbarResolver.SameLiveButton(cached, live, new System.Drawing.Point(20, 20)), "An unchanged live icon passes revalidation");
+        Check(!TaskbarResolver.SameLiveButton(cached, live, new System.Drawing.Point(90, 90)), "A live icon outside the clicked position is rejected");
+        Check(!TaskbarResolver.SameLiveButton(cached, null, new System.Drawing.Point(20, 20)), "A disappeared taskbar icon is rejected");
+        Check(WindowMover.FindTarget("Missing display", Screen.AllScreens) == null, "Disconnected display identity does not fall back to a nearby monitor");
         Check(TaskbarPreviewSuppressor.IsTaskbarPreview("TaskListThumbnailWnd", 10, 20, 10, 20), "Classic taskbar thumbnails are recognized");
         Check(TaskbarPreviewSuppressor.IsTaskbarPreview("XamlExplorerHostIslandWindow", 10, 20, 10, 20), "Windows 11 taskbar preview hosts are recognized");
         Check(!TaskbarPreviewSuppressor.IsTaskbarPreview("XamlExplorerHostIslandWindow", 10, 21, 10, 20), "Alt-Tab and Task View on other Explorer threads are excluded");
@@ -57,9 +75,36 @@ internal static class MonitorSwitchTests
             form.WindowState = FormWindowState.Minimized;
             Application.DoEvents();
             Check(WindowMover.Move(form.Handle, screens[1]) && !Native.IsIconic(form.Handle), "Minimized window is restored onto the chosen display");
+            form.WindowState = FormWindowState.Minimized;
+            Application.DoEvents();
+            Check(WindowMover.Move(form.Handle, Screen.FromHandle(form.Handle)) && !Native.IsIconic(form.Handle),
+                "Selecting the current display also restores a minimized window");
+            IntPtr before = Native.MonitorFromWindow(form.Handle, 2);
+            Check(!WindowMover.Move(form.Handle, "Missing display") && Native.MonitorFromWindow(form.Handle, 2) == before,
+                "A disconnected target cannot move the window or report success");
             form.Close();
         }
         Console.WriteLine("Verified " + checks + " checks.");
+    }
+
+    private static void CheckRequestCancellation()
+    {
+        var state = new MenuRequestState();
+        int first = state.Begin(100);
+        Check(state.IsCurrent(first, 101), "New menu requests are current");
+        state.Cancel();
+        Check(!state.Pending && !state.TryComplete(first, 102), "Outside click or Escape cancellation rejects a delayed result");
+        int old = state.Begin(200);
+        int current = state.Begin(201);
+        Check(!state.TryComplete(old, 202) && state.Pending, "An older response cannot complete the latest request");
+        Check(state.TryComplete(current, 203) && !state.Pending, "The current response completes once");
+        Check(!state.TryComplete(current, 204), "Duplicate completions cannot reopen the menu");
+        int timeout = state.Begin(300);
+        Check(!state.IsCurrent(timeout, 300 + MenuRequestState.TimeoutMilliseconds), "Menu requests expire after the bounded timeout");
+        Check(!state.TryComplete(timeout, 301 + MenuRequestState.TimeoutMilliseconds), "Timed-out responses cannot open a menu");
+        int overflow = state.Begin(int.MaxValue - 10);
+        Check(state.IsCurrent(overflow, unchecked(int.MaxValue + 10)), "Request timing handles system tick-count wraparound");
+        state.Cancel();
     }
 
     private static void CheckMouseGestures()
