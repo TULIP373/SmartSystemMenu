@@ -29,6 +29,7 @@ internal static class MonitorSwitchTests
         Check(TaskbarResolver.Match(button, windows).Count == 2, "Grouped taskbar button returns all matching windows");
         Check(TaskbarResolver.Match(new TaskbarButton { AppId = "Unknown!App", Label = "Unknown" }, windows).Count == 0, "Unknown apps never select an unrelated foreground window");
         Check(TaskbarResolver.Match(new TaskbarButton { AppId = "", Label = "Second window" }, windows).Single() == second, "Exact window-title fallback works");
+        CheckMouseGestures();
 
         using (var form = new MenuLessForm())
         {
@@ -52,6 +53,58 @@ internal static class MonitorSwitchTests
             form.Close();
         }
         Console.WriteLine("Verified " + checks + " checks.");
+    }
+
+    private static void CheckMouseGestures()
+    {
+        var hit = new TaskbarButton { AppId = "Test.Package!App", Bounds = new System.Drawing.Rectangle(10, 10, 40, 40) };
+        var point = new System.Drawing.Point(20, 20);
+        var gesture = new TaskbarMouseGesture();
+        Check(gesture.Handle(0x204, hit, point, false, false) == TaskbarMouseAction.Consume, "A taskbar right press waits for a possible chord");
+        Check(gesture.Handle(0x205, hit, point, false, false) == TaskbarMouseAction.ReplayRightClick, "An ordinary right click requests the native menu");
+        Check(gesture.Handle(0x205, hit, point, false, false) == TaskbarMouseAction.Forward, "Native replay is requested only once");
+
+        foreach (bool leftReleasedFirst in new[] { true, false })
+        {
+            gesture = new TaskbarMouseGesture();
+            gesture.Handle(0x204, hit, point, false, false);
+            Check(gesture.Handle(0x201, hit, point, false, false) == TaskbarMouseAction.OpenMenu && gesture.OpenButton == hit,
+                "Right then left opens the selected taskbar app menu");
+            Check(gesture.Handle(leftReleasedFirst ? 0x202 : 0x205, hit, point, false, false) == TaskbarMouseAction.Consume,
+                "The first chord release cannot activate a taskbar app or open a native menu");
+            Check(gesture.Handle(leftReleasedFirst ? 0x205 : 0x202, hit, point, false, false) == TaskbarMouseAction.Consume,
+                "The other chord release is also consumed");
+            Check(gesture.Handle(0x201, null, point, false, false) == TaskbarMouseAction.Forward,
+                "Subsequent left clicks reach menu items and other windows normally");
+        }
+
+        gesture = new TaskbarMouseGesture();
+        Check(gesture.Handle(0x204, hit, point, true, false) == TaskbarMouseAction.OpenMenu, "Shift plus right click remains available");
+        Check(gesture.Handle(0x205, hit, point, false, false) == TaskbarMouseAction.Consume, "Shift gesture release never opens the native menu too");
+
+        gesture = new TaskbarMouseGesture();
+        Check(gesture.Handle(0x204, null, point, false, false) == TaskbarMouseAction.Forward, "Right clicks outside taskbar app icons are untouched");
+        Check(gesture.Handle(0x201, hit, point, false, false) == TaskbarMouseAction.Forward, "Moving onto an icon after pressing right elsewhere does not trigger a chord");
+        Check(gesture.Handle(0x204, hit, point, false, true) == TaskbarMouseAction.Forward, "Left then right is not mistaken for right then left");
+
+        gesture = new TaskbarMouseGesture();
+        gesture.Handle(0x204, hit, point, false, false);
+        Check(gesture.Handle(0x201, null, new System.Drawing.Point(80, 80), false, false) == TaskbarMouseAction.Forward,
+            "An outside left click cancels the candidate and still reaches its target");
+        Check(gesture.Handle(0x205, hit, point, false, false) == TaskbarMouseAction.Consume, "A cancelled chord does not reopen a menu on release");
+
+        gesture = new TaskbarMouseGesture();
+        gesture.Handle(0x204, hit, point, false, false);
+        var another = new TaskbarButton { AppId = "Another!App", Bounds = hit.Bounds };
+        Check(gesture.Handle(0x201, another, point, false, false) == TaskbarMouseAction.Forward, "A changed taskbar app is never selected by a stale press");
+
+        gesture = new TaskbarMouseGesture();
+        gesture.Handle(0x204, hit, point, false, false);
+        var refreshed = new TaskbarButton { AppId = hit.AppId, Bounds = hit.Bounds };
+        Check(gesture.Handle(0x201, refreshed, point, false, false) == TaskbarMouseAction.OpenMenu,
+            "Refreshing the taskbar cache while right is held does not break the chord");
+        Check(System.Runtime.InteropServices.Marshal.SizeOf(typeof(Native.Input)) == 40,
+            "Native INPUT layout matches the x64 SendInput API");
     }
 
     private sealed class MenuLessForm : Form

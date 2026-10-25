@@ -41,9 +41,9 @@ internal sealed class SwitchForm : Form
     private readonly ContextMenuStrip menu = new ContextMenuStrip();
     private readonly System.Windows.Forms.Timer scanTimer = new System.Windows.Forms.Timer { Interval = 1200 };
     private volatile TaskbarButton[] buttons = new TaskbarButton[0];
+    private readonly TaskbarMouseGesture gesture = new TaskbarMouseGesture();
     private int scanning;
     private IntPtr hook;
-    private bool swallowUp;
     private bool pending;
 
     public SwitchForm()
@@ -57,9 +57,10 @@ internal sealed class SwitchForm : Form
         menu.Closed += delegate(object sender, ToolStripDropDownClosedEventArgs e) { Status("Menu closed; reason=" + e.CloseReason); };
         scanTimer.Tick += delegate { RefreshButtons(); };
         var trayMenu = new ContextMenuStrip();
-        trayMenu.Items.Add("Shift + 右键任务栏图标 → 选择显示器", null, delegate { });
+        trayMenu.Items.Add("任务栏图标：按住右键，再点左键 → 选择显示器", null, delegate { });
+        trayMenu.Items.Add("也可使用 Shift + 右键", null, delegate { });
         trayMenu.Items.Add("退出", null, delegate { Close(); });
-        tray = new NotifyIcon { Icon = SystemIcons.Application, Text = "显示器切换 · Shift + 右键任务栏图标", ContextMenuStrip = trayMenu, Visible = true };
+        tray = new NotifyIcon { Icon = SystemIcons.Application, Text = "显示器切换 · 按住右键再点左键 / Shift + 右键", ContextMenuStrip = trayMenu, Visible = true };
     }
 
     protected override void OnLoad(EventArgs e)
@@ -103,32 +104,44 @@ internal sealed class SwitchForm : Form
         if (code >= 0)
         {
             int kind = message.ToInt32();
+            if (kind != 0x201 && kind != 0x202 && kind != 0x204 && kind != 0x205 && kind != 0x207 && kind != 0x20B)
+                return Native.CallNextHookEx(hook, code, message, data);
+            var mouse = (Native.MouseData)Marshal.PtrToStructure(data, typeof(Native.MouseData));
+            // Our replay must reach Explorer without becoming another gesture.
+            if ((mouse.Flags & 1) != 0 && mouse.Extra == Native.ReplayTag)
+                return Native.CallNextHookEx(hook, code, message, data);
+            var point = mouse.Point;
             if (menu.Visible && (kind == 0x201 || kind == 0x204 || kind == 0x207 || kind == 0x20B))
+                CloseMenuOutside(new Point(point.X, point.Y));
+
+            TaskbarButton button = null;
+            if (kind == 0x204 || ((kind == 0x201 || kind == 0x205) && gesture.AwaitingChord))
             {
-                var click = ((Native.MouseData)Marshal.PtrToStructure(data, typeof(Native.MouseData))).Point;
-                CloseMenuOutside(new Point(click.X, click.Y));
+                button = buttons.FirstOrDefault(b => b.Bounds.Contains(point.X, point.Y));
+                if (button != null && !TaskbarResolver.IsTaskbar(point)) button = null;
             }
-            if (kind == 0x205 && swallowUp)
+            var action = gesture.Handle(kind, button, new Point(point.X, point.Y),
+                (Native.GetAsyncKeyState(0x10) & 0x8000) != 0,
+                (Native.GetAsyncKeyState(0x01) & 0x8000) != 0);
+            if (action == TaskbarMouseAction.OpenMenu && !pending)
             {
-                swallowUp = false;
-                return new IntPtr(1);
+                var selected = gesture.OpenButton;
+                pending = true;
+                // UI Automation must never run inside the low-level mouse hook.
+                BeginInvoke((Action)delegate { ResolveAndShow(point, selected); });
             }
-            if (kind == 0x204 && (Native.GetAsyncKeyState(0x10) & 0x8000) != 0)
+            if (action == TaskbarMouseAction.ReplayRightClick)
             {
-                var point = ((Native.MouseData)Marshal.PtrToStructure(data, typeof(Native.MouseData))).Point;
-                var button = buttons.FirstOrDefault(b => b.Bounds.Contains(point.X, point.Y));
-                if (button != null && TaskbarResolver.IsTaskbar(point))
+                var selected = button;
+                BeginInvoke((Action)delegate
                 {
-                    swallowUp = true;
-                    if (!pending)
-                    {
-                        pending = true;
-                        // UI Automation must never run inside the low-level mouse hook.
-                        BeginInvoke((Action)delegate { ResolveAndShow(point, button); });
-                    }
-                    return new IntPtr(1);
-                }
+                    var cursor = Cursor.Position;
+                    if (selected != null && selected.Bounds.Contains(cursor) &&
+                        TaskbarResolver.IsTaskbar(new Native.Point(cursor.X, cursor.Y)))
+                        Status("Native right click; replayed=" + Native.ReplayRightClick());
+                });
             }
+            if (action != TaskbarMouseAction.Forward) return new IntPtr(1);
         }
         return Native.CallNextHookEx(hook, code, message, data);
     }
@@ -246,6 +259,63 @@ internal sealed class SwitchForm : Form
         tray.Dispose();
         menu.Dispose();
         base.OnFormClosed(e);
+    }
+}
+
+internal enum TaskbarMouseAction { Forward, Consume, OpenMenu, ReplayRightClick }
+
+internal sealed class TaskbarMouseGesture
+{
+    private TaskbarButton rightButton;
+    private bool consumeRightUp;
+    private bool consumeLeftUp;
+    public bool AwaitingChord { get { return rightButton != null; } }
+    public TaskbarButton OpenButton { get; private set; }
+
+    public TaskbarMouseAction Handle(int message, TaskbarButton hit, Point point, bool shift, bool leftDown)
+    {
+        OpenButton = null;
+        if (message == 0x204)
+        {
+            if (hit == null || leftDown) return TaskbarMouseAction.Forward;
+            consumeRightUp = true;
+            if (shift)
+            {
+                OpenButton = hit;
+                return TaskbarMouseAction.OpenMenu;
+            }
+            rightButton = hit;
+            return TaskbarMouseAction.Consume;
+        }
+        if (message == 0x201 && rightButton != null)
+        {
+            var candidate = rightButton;
+            rightButton = null;
+            if (!SameButton(candidate, hit, point)) return TaskbarMouseAction.Forward;
+            consumeLeftUp = true;
+            OpenButton = candidate;
+            return TaskbarMouseAction.OpenMenu;
+        }
+        if (message == 0x205 && consumeRightUp)
+        {
+            consumeRightUp = false;
+            var candidate = rightButton;
+            rightButton = null;
+            return candidate != null && SameButton(candidate, hit, point)
+                ? TaskbarMouseAction.ReplayRightClick : TaskbarMouseAction.Consume;
+        }
+        if (message == 0x202 && consumeLeftUp)
+        {
+            consumeLeftUp = false;
+            return TaskbarMouseAction.Consume;
+        }
+        return TaskbarMouseAction.Forward;
+    }
+
+    private static bool SameButton(TaskbarButton candidate, TaskbarButton hit, Point point)
+    {
+        return hit != null && candidate.Bounds.Contains(point) && hit.Bounds.Contains(point) &&
+            string.Equals(candidate.AppId, hit.AppId, StringComparison.OrdinalIgnoreCase);
     }
 }
 
@@ -421,6 +491,23 @@ internal static class WindowMover
 
 internal static class Native
 {
+    internal static readonly UIntPtr ReplayTag = new UIntPtr(0x4D535743);
+    [StructLayout(LayoutKind.Sequential)] internal struct MouseInput
+    {
+        public int X, Y;
+        public uint MouseData, Flags, Time;
+        public UIntPtr Extra;
+    }
+    [StructLayout(LayoutKind.Sequential)] internal struct Input { public uint Type; public MouseInput Mouse; }
+    internal static bool ReplayRightClick()
+    {
+        var inputs = new[] {
+            new Input { Mouse = new MouseInput { Flags = 0x8, Extra = ReplayTag } },
+            new Input { Mouse = new MouseInput { Flags = 0x10, Extra = ReplayTag } }
+        };
+        return SendInput((uint)inputs.Length, inputs, Marshal.SizeOf(typeof(Input))) == inputs.Length;
+    }
+    [DllImport("user32.dll", SetLastError = true)] private static extern uint SendInput(uint count, Input[] inputs, int size);
     internal delegate bool EnumProc(IntPtr hwnd, IntPtr data);
     internal delegate IntPtr MouseProc(int code, IntPtr message, IntPtr data);
     [StructLayout(LayoutKind.Sequential)] internal struct Point { public int X, Y; public Point(int x, int y) { X = x; Y = y; } }
