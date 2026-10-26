@@ -1,5 +1,14 @@
 # 仅切换显示器：MonitorSwitch
 
+**当前日常版本为 C++ / Win32 原生版。** 源码、构建脚本、测试和资源管理说明见 [MonitorSwitchNative/README.md](MonitorSwitchNative/README.md)。
+
+原生版部署在 `D:\Programs\MonitorSwitch\MonitorSwitch.exe`，保留鼠标切屏、Shift 兼容、多窗口选择、预览收起与管理员窗口移动。
+不依赖 .NET、原版 Hook DLL 或 Windhawk；安装包只包含独立 EXE、说明和许可证。C# 版本及下方说明保留用于历史参考和回退。
+
+---
+
+## 旧 C# 版本
+
 本 fork 增加了 `MonitorSwitch`，用于从任务栏图标选择窗口所在的显示器。
 它提供自己的菜单，不再依赖目标程序的传统系统菜单，也不向目标程序注入 DLL。
 因此也能识别使用自定义标题栏的桌面程序，以及由 `ApplicationFrameHost` 托管的商店应用。
