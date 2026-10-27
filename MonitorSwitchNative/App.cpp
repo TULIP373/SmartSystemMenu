@@ -210,7 +210,7 @@ class App {
         tray.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP; tray.uCallbackMessage = Tray;
         tray.hIcon = static_cast<HICON>(LoadImageW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(AppIcon), IMAGE_ICON,
             GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), LR_SHARED));
-        wcscpy_s(tray.szTip, L"显示器切换 · 按住右键再点左键 / Shift + 右键");
+        wcscpy_s(tray.szTip, L"显示器切换");
         Shell_NotifyIconW(NIM_ADD, &tray);
     }
     static std::wstring MenuText(const std::wstring& text) {
