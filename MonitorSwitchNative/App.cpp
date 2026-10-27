@@ -12,6 +12,7 @@ constexpr UINT Prepare = WM_APP + 1, Result = WM_APP + 2, Cancel = WM_APP + 3,
     Replay = WM_APP + 4, Tray = WM_APP + 5;
 constexpr UINT_PTR MenuTimer = 1;
 constexpr UINT ExitCommand = 9000;
+constexpr WORD AppIcon = 101;
 struct Job { ULONGLONG token{}; POINT point{}; std::optional<Button> button; HWND foreground{}; };
 struct Resolution { Job job; std::vector<Window> windows; std::wstring error; };
 struct Command { Window window; std::wstring device; };
@@ -207,7 +208,8 @@ class App {
     void AddTray() {
         tray = {}; tray.cbSize = sizeof(tray); tray.hWnd = owner; tray.uID = 1;
         tray.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP; tray.uCallbackMessage = Tray;
-        tray.hIcon = LoadIconW(nullptr, IDI_APPLICATION);
+        tray.hIcon = static_cast<HICON>(LoadImageW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(AppIcon), IMAGE_ICON,
+            GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), LR_SHARED));
         wcscpy_s(tray.szTip, L"显示器切换 · 按住右键再点左键 / Shift + 右键");
         Shell_NotifyIconW(NIM_ADD, &tray);
     }
@@ -345,8 +347,11 @@ public:
     int Run(HINSTANCE module) {
         instance = this;
         taskbarCreated = RegisterWindowMessageW(L"TaskbarCreated");
-        WNDCLASSW cls{}; cls.lpfnWndProc = WindowProc; cls.hInstance = module; cls.lpszClassName = WindowClass;
-        if (!RegisterClassW(&cls)) return 1;
+        WNDCLASSEXW cls{}; cls.cbSize = sizeof(cls); cls.lpfnWndProc = WindowProc; cls.hInstance = module; cls.lpszClassName = WindowClass;
+        cls.hIcon = LoadIconW(module, MAKEINTRESOURCEW(AppIcon));
+        cls.hIconSm = static_cast<HICON>(LoadImageW(module, MAKEINTRESOURCEW(AppIcon), IMAGE_ICON,
+            GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), LR_SHARED));
+        if (!RegisterClassExW(&cls)) return 1;
         owner = CreateWindowExW(WS_EX_TOOLWINDOW, WindowClass, L"显示器切换", WS_POPUP, 0, 0, 0, 0, nullptr, nullptr, module, this);
         if (!owner) return 1;
         // Explorer can recreate the taskbar while this process runs elevated.
